@@ -92,6 +92,13 @@ func sendWebhookPayload(payload WebhookPayload) {
 		return
 	}
 
+	// Contact approval: messages from senders the user has not approved are
+	// never forwarded (prompt-injection defence; see approval.go). This is the
+	// single choke point for text, media and reaction webhooks.
+	if gate := approvalGate; gate != nil && !gate.Allowed(payload.ChatJID, payload.Sender, payload.IsFromMe) {
+		return
+	}
+
 	webhookURL := os.Getenv("WEBHOOK_URL")
 	explicitlyConfigured := webhookURL != ""
 	if !explicitlyConfigured {

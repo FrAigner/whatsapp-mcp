@@ -9,6 +9,7 @@ from typing import Any
 
 import requests
 
+import approvals
 import audio
 
 # Configuration via environment variables with sensible defaults
@@ -39,7 +40,7 @@ def _connect_messages_db() -> sqlite3.Connection:
     """
     path = Path(MESSAGES_DB_PATH).resolve()
     try:
-        return sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+        conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
     except sqlite3.OperationalError as exc:
         if not path.is_file():
             raise FileNotFoundError(
@@ -47,6 +48,18 @@ def _connect_messages_db() -> sqlite3.Connection:
                 "Start the bridge once so it creates the store, or point WHATSAPP_DB_PATH at it."
             ) from exc
         raise
+    # Only approved senders are visible; see approvals.py. Close on any failure
+    # so an unfiltered connection is never returned.
+    try:
+        approvals.install_views(conn, MESSAGES_DB_PATH, _approval_aliases)
+    except Exception:
+        conn.close()
+        raise
+    return conn
+
+
+def _approval_aliases(identifier: str) -> list[str]:
+    return _sender_aliases(identifier)
 
 
 def _read_bridge_token() -> str | None:
@@ -1385,6 +1398,23 @@ def mark_messages_read(
         return False, f"Unexpected error: {str(e)}"
 
 
+def message_is_visible(message_id: str, chat_jid: str) -> bool:
+    """True only if the message exists AND its sender is approved (always True when approval is off)."""
+    if not approvals.enabled():
+        return True
+    try:
+        conn = _connect_messages_db()
+    except (FileNotFoundError, sqlite3.Error):
+        return False
+    try:
+        row = conn.execute("SELECT 1 FROM messages WHERE id = ? AND chat_jid = ?", (message_id, chat_jid)).fetchone()
+        return row is not None
+    except sqlite3.Error:
+        return False
+    finally:
+        conn.close()
+
+
 def download_media(message_id: str, chat_jid: str) -> str | None:
     """Download media from a message and return the local file path.
 
@@ -1395,6 +1425,9 @@ def download_media(message_id: str, chat_jid: str) -> str | None:
     Returns:
         The local file path if download was successful, None otherwise
     """
+    if not message_is_visible(message_id, chat_jid):
+        print("Refusing to download media: message is not from an approved contact")
+        return None
     try:
         url = f"{WHATSAPP_API_BASE_URL}/download"
         payload = {"message_id": message_id, "chat_jid": chat_jid}

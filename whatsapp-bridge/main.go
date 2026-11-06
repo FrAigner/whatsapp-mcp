@@ -2057,6 +2057,20 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	// Get appropriate chat name (pass resolved JID so contact lookup works)
 	name := GetChatName(client, messageStore, resolvedChat, chatJID, nil, sender, logger)
 
+	// Contact approval: ask the owner once about unknown senders (name and
+	// number only, never the text) and keep their media out until approved.
+	senderApproved := true
+	if gate := approvalGate; gate != nil {
+		if !msg.Info.IsFromMe {
+			groupName := ""
+			if resolvedChat.Server == "g.us" {
+				groupName = name
+			}
+			gate.Observe(chatJID, sender, msg.Info.PushName, groupName, approvalNotify)
+		}
+		senderApproved = gate.Allowed(chatJID, sender, msg.Info.IsFromMe)
+	}
+
 	// If contact resolution fails (common for LIDs), PushName is often the best available display name.
 	// Only apply for direct messages (not groups) and only when the stored name is the numeric JID user.
 	if !msg.Info.IsFromMe && msg.Info.Chat.Server != "g.us" && strings.TrimSpace(msg.Info.PushName) != "" {
@@ -2189,7 +2203,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	}
 
 	// The opt-out covers every implicit download, including webhook images.
-	shouldDownload := !isStatus && autoDownloadMediaEnabled()
+	shouldDownload := !isStatus && senderApproved && autoDownloadMediaEnabled()
 
 	// Forwarded images download synchronously to include bytes in the webhook.
 	// Other media downloads asynchronously for caching when downloads are enabled.
@@ -3139,6 +3153,22 @@ func main() {
 		return
 	}
 	webhookAuthToken = bridgeToken
+
+	if approvalRequired() {
+		store, apprErr := newApprovalStore(allowlistPath)
+		if apprErr != nil {
+			// Fail closed: an unreadable allowlist approves nobody.
+			logger.Errorf("Contact approval list unreadable, nobody is approved: %v", apprErr)
+		}
+		approvalGate = store
+		if tg := telegramFromEnv(store); tg != nil {
+			approvalNotify = tg.Prompt
+			go tg.Run()
+			logger.Infof("Contact approval active; approvals via Telegram")
+		} else {
+			logger.Warnf("Contact approval active but TELEGRAM_BOT_TOKEN/TELEGRAM_OWNER_CHAT_ID not set: new senders stay blocked until added to %s", allowlistPath)
+		}
+	}
 
 	// Print the one-time setup banner immediately, before attempting to
 	// connect/pair. loadOrCreateBridgeToken() already persisted the token to

@@ -13,6 +13,7 @@ from mcp_config import resolve_host, resolve_port, resolve_transport
 from parent_watchdog import install_stdio_parent_watchdog
 from whatsapp import (
     MESSAGES_DB_PATH,
+    message_is_visible,
     msg_to_dict,
 )
 from whatsapp import (
@@ -547,6 +548,8 @@ def transcribe_audio(message_id: str, chat_jid: str, force: bool = False) -> dic
     Returns:
         A dictionary with success status and the transcript
     """
+    if not message_is_visible(message_id, chat_jid):
+        return {"success": False, "message": "Message not found or sender not approved"}
     if not force:
         existing = transcription.stored_transcript(MESSAGES_DB_PATH, message_id, chat_jid)
         if existing:
