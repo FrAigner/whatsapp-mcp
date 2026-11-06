@@ -28,9 +28,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -160,9 +162,27 @@ func checkBearerToken(authHeader, expected string) bool {
 // MCP server's choice of WHATSAPP_API_URL determines which Host header the
 // underlying HTTP client emits.
 func buildAllowedHosts(port int) map[string]struct{} {
-	return map[string]struct{}{
+	hosts := map[string]struct{}{
 		fmt.Sprintf("127.0.0.1:%d", port): {},
 		fmt.Sprintf("localhost:%d", port): {},
 		fmt.Sprintf("[::1]:%d", port):     {},
 	}
+	// Container setups reach the bridge by service name (e.g. "bridge:8080").
+	// Extra names must be listed explicitly; the Host check stays exact-match.
+	for _, h := range strings.Split(os.Getenv("WHATSAPP_BRIDGE_ALLOWED_HOSTS"), ",") {
+		if h = strings.ToLower(strings.TrimSpace(h)); h != "" {
+			hosts[h] = struct{}{}
+		}
+	}
+	return hosts
+}
+
+// bridgeBindAddr is the REST listen address. Loopback by default; set
+// WHATSAPP_BRIDGE_BIND=0.0.0.0 only inside a container on a private network.
+func bridgeBindAddr(port int) string {
+	host := strings.TrimSpace(os.Getenv("WHATSAPP_BRIDGE_BIND"))
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, strconv.Itoa(port))
 }

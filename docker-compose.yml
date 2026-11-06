@@ -1,0 +1,55 @@
+# Bridge + MCP server on one host, as two containers sharing the bridge's store.
+#
+#   create a file .env next to this one with two lines:
+#     TELEGRAM_BOT_TOKEN=...
+#     TELEGRAM_OWNER_CHAT_ID=...
+#   docker compose up -d --build
+#   docker compose logs -f bridge   # scan the QR code once to pair WhatsApp
+#
+# Security layout:
+#   - The bridge publishes NO port; only the mcp container reaches it (service name "bridge").
+#   - The mcp container mounts the store READ-ONLY, so it can never edit
+#     allowlist.json. Only the bridge (via your Telegram approval) can.
+#   - The MCP port is bound to the host's loopback. Reach it through an SSH
+#     tunnel or a VPN such as Tailscale; it has no login of its own.
+
+services:
+  bridge:
+    build:
+      context: .
+      dockerfile: docker/bridge.Dockerfile
+    restart: unless-stopped
+    environment:
+      WHATSAPP_BRIDGE_PORT: "8080"
+      WHATSAPP_BRIDGE_BIND: "0.0.0.0"           # only reachable inside the compose network
+      WHATSAPP_BRIDGE_ALLOWED_HOSTS: "bridge:8080"
+      WHATSAPP_REQUIRE_APPROVAL: "true"
+      WEBHOOK_ENABLED: "false"
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_OWNER_CHAT_ID: "${TELEGRAM_OWNER_CHAT_ID:-}"
+    volumes:
+      - store:/app/store
+
+  mcp:
+    build:
+      context: .
+      dockerfile: docker/mcp.Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - bridge
+    environment:
+      WHATSAPP_MCP_TRANSPORT: "http"
+      WHATSAPP_MCP_HOST: "0.0.0.0"
+      WHATSAPP_MCP_PORT: "8000"
+      WHATSAPP_API_URL: "http://bridge:8080/api"
+      WHATSAPP_DB_PATH: "/app/store/messages.db"
+      WHATSMEOW_DB_PATH: "/app/store/whatsapp.db"
+      WHATSAPP_ALLOWLIST_PATH: "/app/store/allowlist.json"
+      WHATSAPP_REQUIRE_APPROVAL: "true"
+    volumes:
+      - store:/app/store:ro
+    ports:
+      - "127.0.0.1:8000:8000"
+
+volumes:
+  store:
